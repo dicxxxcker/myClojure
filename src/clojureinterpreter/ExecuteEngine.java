@@ -13,7 +13,7 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.regex.Pattern;
-
+import java.lang.reflect.*;
 /**
  *
  * @author 敲可爱
@@ -31,7 +31,13 @@ public class ExecuteEngine {
     }
     
     //导入的java包 用来动态加载java类
-    private final ArrayList<String> javaPackages = new ArrayList<>();
+    private final LinkedList<String> javaPackages = new LinkedList<>();
+    {
+        javaPackages.add("");
+        javaPackages.add("java.lang");
+        javaPackages.add("java.util");
+    }
+    
     //函数映射
     private final keywordSets keys = new keywordSets();
     private final HashSet<String> basicSpecialSet = new HashSet<>();
@@ -200,14 +206,17 @@ public class ExecuteEngine {
         if(basicSpecialSet.contains(fun)){
             return exeSpecial(fun,params);
         }
+        
+        //判断是否调用java
+        if (fun.charAt(0) == '.' || fun.equals("import") || fun.equals("new")) {
+            return explainJava(fun, params);
+        }
+        
         Base[] otherParams = new Base[params.length - 1];
         for (int i = 1; i < params.length; i++) {
             otherParams[i - 1] = explainParam(params[i].unwrap().toString());
         }
-        //判断是否调用java
-        if (fun.charAt(0) == '.' || fun.equals("import") || fun.equals("new")) {
-            return explainJava(fun, otherParams);
-        }
+        
         //查看是否本地变量
         if (localVariableSheet.containsKey(fun)){
             return localVariableSheet.get(fun);
@@ -298,6 +307,7 @@ public class ExecuteEngine {
 
     public Base explainParam(String s) throws Exception {
         System.out.println("explainParam: "+s);
+        s = s.trim(); 
         //查看是否数字或字符串
         if (s.charAt(0) > '0' && s.charAt(0) < '9') {
             return new Base(Double.parseDouble(s));
@@ -338,6 +348,9 @@ public class ExecuteEngine {
         if (s.charAt(0) == '#'&&s.length()>2&&s.charAt(1)=='(') {
             return new Base(((CloFunction) explainAnonymousFunc(s.substring(1)).unwrap()));
         }
+        //调用java部分 new对象和调用java函数
+        
+        
         //
         /*
             case '.':;return explainJava(s,)
@@ -361,13 +374,84 @@ public class ExecuteEngine {
     }
 
     //调用java
-    public Base explainJava(String fun, Base[] params) throws Exception {
-        switch (fun) {
-            case "import":
-            case ".":
-            case "new":
+    public Base explainJava(String fun, Base[] strParams) throws Exception {
+        switch (fun.charAt(0)) {
+            // import
+            case 'i': return $importJ(strParams);
+            // method
+            case '.': return $methodJ(strParams);
+            // new
+            case 'n': return $newInstanceJ(strParams);
         }
         return null;
+    }
+    //导入java包 包名处理存疑
+    public Base $importJ(Base[] strParams) throws Exception {
+        if(strParams.length!=2)
+            throw new RuntimeException("arguments number wrong!");
+        String pack = strParams[1].unwrap().toString();
+        pack = pack.substring(1, pack.length()-1).trim();
+        if(!javaPackages.contains(pack))
+            javaPackages.add(pack);
+        return null;
+    }
+    
+    //调用java某类对象的方法
+    public Base $methodJ(Base[] strParams) throws Exception {
+        //参数数组 参数类型数组
+        String funcName = strParams[0].unwrap().toString().substring(1);
+        Object obj = explainParam(strParams[1].unwrap().toString().trim()).unwrap();
+        Object[] parameters = new Object[0];
+        if(strParams.length>2)
+            parameters = new Object[strParams.length-2];
+        for(int i=0;i<parameters.length;i++)
+            parameters[i] = explainParam(strParams[i+2].unwrap().toString()).unwrap();
+        Class[] parameterTypes = new Class[strParams.length-2];
+        for(int i=0;i<parameterTypes.length;i++)
+            parameterTypes[i] = parameters[i].getClass();
+        //空参数处理存疑
+        Method met = obj.getClass().getMethod(funcName,parameterTypes);
+        return new Base(met.invoke(obj, parameters));
+    }
+    
+    //创建java对象
+    public Base $newInstanceJ(Base[] strParams) throws Exception {
+        if(strParams.length<2)
+            throw new RuntimeException("arguments number wrong! missing class Name!");
+        Class cl = null;
+        String className = null;
+        for(int i = 0;i<javaPackages.size();i++){
+            try{
+                className = javaPackages.get(i)+"."+ strParams[1].unwrap().toString().trim();
+                cl = Class.forName(className);
+                break;
+            }catch(Exception e){}
+        }
+        if(cl==null)
+            throw new RuntimeException("Class Not Found!");
+        //参数为空 直接创建对象
+        if(strParams.length == 2)
+            return new Base(cl.newInstance());
+        Object[] arguments = new Object[strParams.length-2];
+        for(int i=2;i<strParams.length;i++)
+            arguments[i-2] = explainParam(strParams[i].unwrap().toString());
+        //调用构造器 检查参数类型
+        Constructor[] constructors=cl.getConstructors();
+        for(Constructor c:constructors){
+            Class[] cls = c.getParameterTypes();
+            if(cls.length != arguments.length)
+                continue;
+            boolean rightConstructor = true;
+            //类型检查
+            for(int i=0;i<arguments.length;i++){
+                if(!cls[i].isAssignableFrom(arguments[i].getClass()))
+                    rightConstructor = false;
+            }
+            if(!rightConstructor)
+                continue;
+            return new Base(c.newInstance(arguments));
+        }
+        throw new RuntimeException("Class : " + className + " No Suitable Constructor Found!");
     }
     
     //基础函数 特殊形式
@@ -384,12 +468,12 @@ public class ExecuteEngine {
     }
     
     //声明变量
-    private Base $def(Base[] strParams)throws RuntimeException{
+    private Base $def(Base[] strParams)throws Exception{
         if(LocalVar.size()>1)
             throw new RuntimeException("error! can't define in a function scope!");
         if(strParams.length!=3)
             throw new RuntimeException("arguments number error!");
-        localVariableSheet.put(strParams[1].unwrap().toString(), strParams[2]);
+        localVariableSheet.put(strParams[1].unwrap().toString(), explainParam(strParams[2].unwrap().toString().trim()));
         return strParams[2];
     };
     
@@ -400,7 +484,8 @@ public class ExecuteEngine {
             throw new RuntimeException("error! can't define in a function scope!");
         Base func = new Base();
         //放入函数映射中
-        keys.vars.put(strParams[1].unwrap().toString(), func);       
+        String funcName = strParams[1].unwrap().toString();
+        keys.vars.put(funcName, func);       
         func.set(new CloFunction() {
             @Override
             public Base invoke(Base[] parameters) throws Exception {
@@ -412,8 +497,8 @@ public class ExecuteEngine {
                     i++;
                 //逗号问题需要改进
                 Base[] funcParams = analysis(strParams[i++].unwrap().toString());
-                if(funcParams.length!=parameters.length)
-                    throw new RuntimeException("function arguments number error!!");
+                if(funcParams.length != parameters.length)
+                    throw new RuntimeException("function arguments number error!! funtion name : "+funcName +"\n wrong argumnets number: "+parameters.length);
                 //绑定 将形参与实参映射在一起
                 for(int k = 0;k<funcParams.length;k++)
                     localVariableSheet.put(funcParams[k].unwrap().toString(),parameters[k]);

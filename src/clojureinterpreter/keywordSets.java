@@ -26,6 +26,7 @@ public class keywordSets {
         coreFunMapping.put("/",new $divide());
         coreFunMapping.put("not", new $not());
         coreFunMapping.put("println", new println());
+        coreFunMapping.put(">",new $bigger());
     }
     
     final HashMap<String,Base> vars = new HashMap<>();
